@@ -1,8 +1,14 @@
+library(plyr)
+library(dplyr)
+library(dfoptim)
+
+heart=read.csv('s1_heart_data.csv')
 
 # creates a function to optimize
 heart_rate_estimator_function <- function(
   data,
   variables,
+  coefficients_to_exponentiate=character(0),
   polynomial_order=1 #may be implemented later
 ){
   # clean input
@@ -27,15 +33,21 @@ heart_rate_estimator_function <- function(
     i = 1
     for (variable in variables){
       
-      HR_a = HR_a + X[1+3*i] * data[,variable]
-      lag = lag + X[2+3*i] * data[,variable]
-      C = C + X[3+3*i] * data[,variable]
+      trans_func = identity
+      if (variable %in% coefficients_to_exponentiate){
+        trans_func = function(x, min_slope=.01) {
+          ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
+        }
+      }
+      HR_a = HR_a + trans_func(X[1+3*i]) * data[,variable]
+      lag = lag + trans_func(X[2+3*i]) * data[,variable]
+      C = C + trans_func(X[3+3*i]) * data[,variable]
       i = i + 1
     }
     
     sigma2 = X[3*i+1]
     
-    estimates = data$heart_rate_stop + HR_a - HR_a * exp(-pmax(data$rest_time - lag, 0) * C)
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * (1-exp(-pmax(data$rest_time - lag, 0) * C))
     
     ll = -nrow(data)/2 * log(sigma2)  - 
       1/sigma2*sum(
@@ -47,16 +59,16 @@ heart_rate_estimator_function <- function(
       penalty=penalty+1e6
     }
     if (any(lag < 0)){
-      penalty=penalty+1e6
+      penalty=penalty+150*sum(exp(abs(lag)[lag<0]))+300
     }
     if (any(HR_a <= 50)){
-      penalty=penalty+1e6
+      penalty=penalty+150*sum(exp(abs(50-HR_a)[HR_a<0]))+300
     }
     if (any(C<= 0)){
-      penalty=penalty+1e6
+      penalty=penalty+150*sum(exp(abs(C)[C<0]))+300
     }
     
-    return(-ll)
+    return(-ll + penalty)
   }
   return(model_func)
 }
@@ -64,6 +76,7 @@ heart_rate_estimator_function <- function(
 make_estimator_function <- function(
   data,
   variables,
+  coefficients_to_exponentiate=character(0),
   polynomial_order=1 #may be implemented later
 ){
   # clean input
@@ -87,16 +100,21 @@ make_estimator_function <- function(
     C = X[3]
     i = 1
     for (variable in variables){
-      
-      HR_a = HR_a + X[1+3*i] * data[,variable]
-      lag = lag + X[2+3*i] * data[,variable]
-      C = C + X[3+3*i] * data[,variable]
+      trans_func = identity
+      if (variable %in% coefficients_to_exponentiate){
+        trans_func = function(x, min_slope=.01) {
+          ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
+        }
+      }
+      HR_a = HR_a + trans_func(X[1+3*i]) * data[,variable]
+      lag = lag + trans_func(X[2+3*i]) * data[,variable]
+      C = C + trans_func(X[3+3*i]) * data[,variable]
       i = i + 1
     }
     
     sigma2 = X[3*i+1]
     
-    estimates = data$heart_rate_stop + HR_a - HR_a * exp(-pmax(data$rest_time - lag, 0) * C)
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * (1-exp(-pmax(data$rest_time - lag, 0) * C))
     
     ll = -nrow(data)/2 * log(sigma2)  - 
       1/sigma2*sum(
@@ -108,41 +126,70 @@ make_estimator_function <- function(
   return(model_func)
 }
 
+heart = heart %>% mutate(avg_temp_from_room_squared = (avg_temp-22)^2)
+
 hr_func = heart_rate_estimator_function(
-  heart,
-  variables=c('avg_temp', 'speed_past_60_seconds')
+  heart %>% filter(distance_start> 0.8),
+  #coefficients_to_exponentiate=c('avg_temp', 'speed_past_60_seconds'),
+  variables=c('avg_temp', 'speed_past_60_seconds')#, 'avg_temp_from_room_squared')
 )
 
 estimator_func = make_estimator_function(
-  heart,
-  variables=c('avg_temp','speed_past_60_seconds')
+  heart %>% filter(distance_start> 0.8),
+  #coefficients_to_exponentiate=c('avg_temp', 'speed_past_60_seconds'),
+  variables=c('avg_temp','speed_past_60_seconds')#, 'avg_temp_from_room_squared')
 )
 
+# steady_temp, lag, rate
 initial_params = c(
   155,5,0.1, # constant
-  0,0,0, # avg_temp
-  0,0,0, # speed_past_60_seconds
+  0.1,0.1,0.1, # avg_temp
+  0.1,0.1,0.1, # speed_past_60_seconds
+  #0.001,0.001,0.001, # avg_temp_from_room_squared
   400 # sigma2
 )
 
+initial_parameter_modifications<- function(n=10){
+  modifications = c(
+    rnorm(3)*30,
+    rnorm(n-4)*10*(rnorm(n-4)< -0.1) + rlnorm(n-4,1,1.5),
+    rnorm(1)*5 + rlnorm(1, 1, 1) * (1-2*(rnorm(1) < 0))
+  )
+  if (rnorm(1)>-1)
+   return(modifications)
+  else{
+    return(modifications/1000)
+  }
+}
+
 if (TRUE){
+  best_optims = list()
+  best_optims_counter = 1
   best_value = Inf
-  for (i in 1:500){
+  best_method=NULL
+  for (i in 0:5000){
     print(i)
-    (
-    
-    new_optimal_params = optim(
-      initial_params,
-      hr_func,
-      method='SANN',
-      control=list(
-        maxit=100000,
-        ndeps=2e-4,
-        tmax=100,
-        temp=30
+    ipars = initial_params+initial_parameter_modifications()/4.5
+    if (i %% 2==0)
+      new_optimal_params = optim(
+        ipars,
+        hr_func,
+        method='SANN',
+        control=list(
+          maxit=120000,
+          ndeps=2e-4,
+          tmax=100,
+          temp=30
+        )
       )
-    ))
+    else if (i %% 2==1)
+      new_optimal_params = hjk(ipars, hr_func, control=list(maxfeval=5e6))
+    else if (i %% 2==2)
+      new_optimal_params = nmk(ipars, hr_func)
     if (new_optimal_params$value < best_value){
+      
+      best_method = c('optim','hjk')[(i %% 2)+1]
+      print(best_method)
       optimal_params=new_optimal_params
       print(optimal_params)
       best_value = optimal_params$value
@@ -154,24 +201,12 @@ if (TRUE){
       
       (r2 = 1-var(residuals)/var(data_filtered$heart_rate_start))
       print(r2)
+      best_optims[[best_optims_counter]] = list(method=best_method, ipars=ipars, params=new_optimal_params, r2=r2)
+      best_optims_counter = best_optims_counter+1
     }
   }
 }
-else {
-  (
-    optimal_params = optim(
-      initial_params,
-      hr_func,
-      method='SANN',
-      control=list(
-        maxit=100000,
-        ndeps=1e-4,
-        tmax=100,
-        temp=40
-      )
-    )
-  )
-}
+
 
 
 
@@ -182,12 +217,18 @@ residuals = (data_filtered$heart_rate_start-predictions)
 (r2 = 1-var(residuals)/var(data_filtered$heart_rate_start))
 
 
-# nls function
-if (FALSE){
-  model = nls(
-    heart_rate_start ~ heart_rate_stop + (1+avg_temp+speed_past_60_seconds) * exp(max(0, rest_time-(1+avg_temp + speed_past_60_seconds))*(1+avg_temp + speed_past_60_seconds)),
-    data=data_filtered,
-    start=list(heart_rate_stop=1, avg_temp=0, speed_past_60_seconds=0, rest_time=1)
-  )
-  
-}
+## HR_f = HR_0 + HR_a * (1-exp(-max(t-lag,0) * rate))
+# HR_a = -6.63 + 0.12*avg_temp - 4.496 * v
+# lag = 6.7 - .14 * avg_temp - 0.28 * v
+# rate = 0.045 - 0.0002 * avg_temp - 0.001 * v
+
+## HR_f = HR_0 + (HR_a - HR_0) * (exp(-max(t-lag,0) * rate))
+# HR_a = 87 + 0.1*T - .05 * s
+# lag = -2.45 -0.59 * T + 0.61 * s
+# rate = 0.0336 - 6e-4 * T -5.75e-4 * s
+
+
+# HR_a = 80 + 0.71 * T - 0.054 * s
+# lag = 1.47 - 0.029 * T - 0.03469 * s
+# rate = 0.0327 + 7.77e-6 * T - 1.13e-3 * s
+# sigma2 = 258.5
