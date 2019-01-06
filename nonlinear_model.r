@@ -4,6 +4,10 @@ library(dfoptim)
 
 heart=read.csv('s1_heart_data.csv')
 
+na.penalty <- function(x, ceiling=5000){
+  return(ifelse(is.na(x),ceiling,x))
+}
+
 # creates a function to optimize
 heart_rate_estimator_function <- function(
   data,
@@ -21,15 +25,20 @@ heart_rate_estimator_function <- function(
   # function to return
   model_func <- function(X){
     # X - description below
-    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C(v1), ..., C(vn), sigma^2
+    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C1(v1), ..., C2(vn), sigma^2
     # HR_a is the steady-state heart rate
-    # lag is the lag in how the heart rate will change
-    # C is the coefficient of heart rate change
+    # lag is the lag in which process of heart rate relaxation changes
+    # C1 is the coefficient of heart rate change in first phase
+    # C2 is the coefficient of heart rate change in second phase
+    # sigma2 is standard error in phase 1
+    # sigma2_rate is coefficient of rate of change of sigma in phase 2
+    # sigma2_final is final sigma for second phase of heart rate change
     # 1 means "constant" - first three variables in model are the constant
     # vn means the nth variable
     HR_a = X[1]
     lag = X[2]
-    C = X[3]
+    C1 = X[3]
+    C2 = X[4]
     i = 1
     for (variable in variables){
       
@@ -39,34 +48,63 @@ heart_rate_estimator_function <- function(
           ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
         }
       }
-      HR_a = HR_a + trans_func(X[1+3*i]) * data[,variable]
-      lag = lag + trans_func(X[2+3*i]) * data[,variable]
-      C = C + trans_func(X[3+3*i]) * data[,variable]
+      HR_a = HR_a + trans_func(X[1+4*i]) * data[,variable]
+      lag = lag + trans_func(X[2+4*i]) * data[,variable]
+      C1 = C1 + trans_func(X[3+4*i]) * data[,variable]
+      C2 = C2 + trans_func(X[4+4*i]) * data[,variable]
       i = i + 1
     }
     
-    sigma2 = X[3*i+1]
+    sigma2 = X[4*i+1]
+    sigma2_rate = X[4*i+2]
+    sigma2_final = X[4*i + 3]
     
-    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * (1-exp(-pmax(data$rest_time - lag, 0) * C))
+    t = data$rest_time
     
-    ll = -nrow(data)/2 * log(sigma2)  - 
-      1/sigma2*sum(
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * 
+      (1-ifelse(t<lag, exp(-t * C1), exp(-lag * C1) * exp(-(t-lag) * C2)))
+    
+    # if Inf * 0 occurs above
+    estimates = ifelse(is.na(estimates), 1000, estimates)
+    
+    
+    effective_sigma2 = sigma2 + ifelse(t < lag, 0, (sigma2_final-sigma2)*(1-pmin(0, exp(-(t-lag)*sigma2_rate))))
+    if (any(is.na(log(effective_sigma2)))){
+      print(summary(effective_sigma2))
+    }
+    #print(C2)
+    #print(effective_sigma2)
+    
+    ll = -sum(na.penalty(log(effective_sigma2)))/2  - 
+      sum(1/abs(effective_sigma2) *
          (data$heart_rate_start - estimates)^2
-    )
+         )
+  
     
     penalty=0
-    if (sigma2 < 0){
+    penalty = penalty + 50 * (sum(effective_sigma2==0))
+    if (sigma2 < 0 | sigma2_final < 0){
       penalty=penalty+1e6
     }
+    if (sigma2_rate < 0)
+      penalty=penalty+1e6
+    if (sigma2 > sigma2_final)
+      penalty= penalty + (sigma2-sigma2_final)^2
+    
     if (any(lag < 0)){
       penalty=penalty+150*sum(exp(abs(lag)[lag<0]))+300
     }
     if (any(HR_a <= 50)){
-      penalty=penalty+150*sum(exp(abs(50-HR_a)[HR_a<0]))+300
+      penalty=penalty+150*sum(pmin(1000, exp(abs(50-HR_a)[HR_a<0])))+300
     }
-    if (any(C<= 0)){
-      penalty=penalty+150*sum(exp(abs(C)[C<0]))+300
+    if (any(C1<= 0)){
+      penalty=penalty+150* sum(pmin(2000,exp(abs(C1)[C1<0])))+300
     }
+    if (any(C2<= 0)){
+      penalty=penalty+150*sum(pmin(2000,exp(abs(C2)[C2<0])))+300
+    }
+    
+
     
     return(-ll + penalty)
   }
@@ -89,37 +127,61 @@ make_estimator_function <- function(
   # function to return
   model_func <- function(X){
     # X - description below
-    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C(v1), ..., C(vn), sigma^2
+    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C1(v1), ..., C2(vn), sigma^2
     # HR_a is the steady-state heart rate
-    # lag is the lag in how the heart rate will change
-    # C is the coefficient of heart rate change
+    # lag is the lag in which process of heart rate relaxation changes
+    # C1 is the coefficient of heart rate change in first phase
+    # C2 is the coefficient of heart rate change in second phase
+    # sigma2 is standard error in phase 1
+    # sigma2_rate is coefficient of rate of change of sigma in phase 2
+    # sigma2_final is final sigma for second phase of heart rate change
     # 1 means "constant" - first three variables in model are the constant
     # vn means the nth variable
-    HR_a = X[1]#;HR_a=45
+    HR_a = X[1]
     lag = X[2]
-    C = X[3]
+    C1 = X[3]
+    C2 = X[4]
     i = 1
     for (variable in variables){
+      
       trans_func = identity
       if (variable %in% coefficients_to_exponentiate){
         trans_func = function(x, min_slope=.01) {
           ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
         }
       }
-      HR_a = HR_a + trans_func(X[1+3*i]) * data[,variable]
-      lag = lag + trans_func(X[2+3*i]) * data[,variable]
-      C = C + trans_func(X[3+3*i]) * data[,variable]
+      HR_a = HR_a + trans_func(X[1+4*i]) * data[,variable]
+      lag = lag + trans_func(X[2+4*i]) * data[,variable]
+      C1 = C1 + trans_func(X[3+4*i]) * data[,variable]
+      C2 = C2 + trans_func(X[4+4*i]) * data[,variable]
       i = i + 1
     }
     
-    sigma2 = X[3*i+1]
+    sigma2 = X[4*i+1]
+    sigma2_rate = X[4*i+2]
+    sigma2_final = X[4*i + 3]
     
-    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * (1-exp(-pmax(data$rest_time - lag, 0) * C))
+    t = data$rest_time
     
-    ll = -nrow(data)/2 * log(sigma2)  - 
-      1/sigma2*sum(
-        (data$heart_rate_start - estimates)^2
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * 
+      (1-ifelse(t<lag, exp(-t * C1), exp(-lag * C1) * exp(-(t-lag) * C2)))
+    
+    # if Inf * 0 occurs above
+    estimates = ifelse(is.na(estimates), 1000, estimates)
+    
+    
+    effective_sigma2 = sigma2 + ifelse(t < lag, 0, (sigma2_final-sigma2)*(1-pmin(0, exp(-(t-lag)*sigma2_rate))))
+    if (any(is.na(log(effective_sigma2)))){
+      print(summary(effective_sigma2))
+    }
+    #print(C2)
+    #print(effective_sigma2)
+    
+    ll = -sum(na.penalty(log(effective_sigma2)))/2  - 
+      sum(1/abs(effective_sigma2) *
+            (data$heart_rate_start - estimates)^2
       )
+    
     return(estimates)
   }
   data_filtered <<- data
@@ -142,18 +204,22 @@ estimator_func = make_estimator_function(
 
 # steady_temp, lag, rate
 initial_params = c(
-  155,5,0.1, # constant
-  0.1,0.1,0.1, # avg_temp
-  0.1,0.1,0.1, # speed_past_60_seconds
+  80,5,0.1,0.05, # constant
+  0.1,0.1,0.1,0.1, # avg_temp
+  0.1,0.1,0.10,0, # speed_past_60_seconds
   #0.001,0.001,0.001, # avg_temp_from_room_squared
-  400 # sigma2
+  400, # sigma2
+  0.2, # sigma2_rate
+  600 # sigma2_final
 )
 
-initial_parameter_modifications<- function(n=10){
+initial_parameter_modifications<- function(n=14){
   modifications = c(
-    rnorm(3)*30,
-    rnorm(n-4)*10*(rnorm(n-4)< -0.1) + rlnorm(n-4,1,1.5),
-    rnorm(1)*5 + rlnorm(1, 1, 1) * (1-2*(rnorm(1) < 0))
+    rnorm(4)*30,
+    rnorm(8)*10*(rnorm(8)< -0.1) + rlnorm(8,1,1.5),
+    rnorm(1)*5 + rlnorm(1, 1, 1) * (1-2*(rnorm(1) < 0)),
+    rnorm(1)*0.05,
+    rnorm(1)*5 + rlnorm(1, 1, 1.1) * (1-2*(rnorm(1) < 0))
   )
   if (rnorm(1)>-1)
    return(modifications)
@@ -167,10 +233,10 @@ if (TRUE){
   best_optims_counter = 1
   best_value = Inf
   best_method=NULL
-  for (i in 0:5000){
+  for (i in 1:5000){
     print(i)
     ipars = initial_params+initial_parameter_modifications()/4.5
-    if (i %% 2==0)
+    if (i %% 2==0.1)
       new_optimal_params = optim(
         ipars,
         hr_func,
@@ -232,3 +298,5 @@ residuals = (data_filtered$heart_rate_start-predictions)
 # lag = 1.47 - 0.029 * T - 0.03469 * s
 # rate = 0.0327 + 7.77e-6 * T - 1.13e-3 * s
 # sigma2 = 258.5
+
+## HR_f
