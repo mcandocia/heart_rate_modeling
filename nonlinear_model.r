@@ -9,7 +9,7 @@ na.penalty <- function(x, ceiling=5000){
 }
 
 # creates a function to optimize
-heart_rate_estimator_function <- function(
+heart_rate_estimator_function_v2 <- function(
   data,
   variables,
   coefficients_to_exponentiate=character(0),
@@ -48,7 +48,8 @@ heart_rate_estimator_function <- function(
           ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
         }
       }
-      HR_a = HR_a + trans_func(X[1+4*i]) * data[,variable]
+      if (!grepl('speed|total_time|cadence', variable))
+        HR_a = HR_a + trans_func(X[1+4*i]) * data[,variable]
       lag = lag + trans_func(X[2+4*i]) * data[,variable]
       C1 = C1 + trans_func(X[3+4*i]) * data[,variable]
       C2 = C2 + trans_func(X[4+4*i]) * data[,variable]
@@ -70,7 +71,7 @@ heart_rate_estimator_function <- function(
     
     effective_sigma2 = sigma2 + ifelse(t < lag, 0, (sigma2_final-sigma2)*(1-pmin(0, exp(-(t-lag)*sigma2_rate))))
     if (any(is.na(log(effective_sigma2)))){
-      print(summary(effective_sigma2))
+      #print(summary(effective_sigma2))
     }
     #print(C2)
     #print(effective_sigma2)
@@ -91,8 +92,9 @@ heart_rate_estimator_function <- function(
     if (sigma2 > sigma2_final)
       penalty= penalty + (sigma2-sigma2_final)^2
     
-    if (any(lag < 0)){
-      penalty=penalty+150*sum(exp(abs(lag)[lag<0]))+300
+    # now only worried about 10+ min. lag
+    if (any(lag < -600)){
+      penalty=penalty+sum((lag[lag < -600]+600)^2)
     }
     if (any(HR_a <= 50)){
       penalty=penalty+150*sum(pmin(1000, exp(abs(50-HR_a)[HR_a<0])))+300
@@ -103,6 +105,8 @@ heart_rate_estimator_function <- function(
     if (any(C2<= 0)){
       penalty=penalty+150*sum(pmin(2000,exp(abs(C2)[C2<0])))+300
     }
+    # very tiny regularization penalty
+    penalty=penalty+0.01*sum(abs(X))
     
 
     
@@ -111,7 +115,7 @@ heart_rate_estimator_function <- function(
   return(model_func)
 }
 
-make_estimator_function <- function(
+make_estimator_function_v2 <- function(
   data,
   variables,
   coefficients_to_exponentiate=character(0),
@@ -172,7 +176,7 @@ make_estimator_function <- function(
     
     effective_sigma2 = sigma2 + ifelse(t < lag, 0, (sigma2_final-sigma2)*(1-pmin(0, exp(-(t-lag)*sigma2_rate))))
     if (any(is.na(log(effective_sigma2)))){
-      print(summary(effective_sigma2))
+      #print(summary(effective_sigma2))
     }
     #print(C2)
     #print(effective_sigma2)

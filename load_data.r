@@ -4,7 +4,7 @@ library(lubridate)
 
 # determine all running events
 
-FILE_DIRECTORY = '/ntfsl/workspace/fit_conversion/subject_data/maxcan/fit_csv'
+FILE_DIRECTORY = 'D://workspace/fit_conversion/subject_data/maxcan/fit_csv'
 
 INCONSISTENCY_ACTION = 'skip'# or 'stop'
 
