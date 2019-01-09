@@ -22,7 +22,10 @@ ggplot(heart %>% filter(distance_start > 0.8)) + geom_point(aes(color=heart_rate
   ylab('Heart Rate when Starting Again (bpm)') + 
   scale_x_log10()
 
-ggplot(heart %>% filter(distance_stop > 0.5, rest_time < 361, heart_rate_stop < 190)) + 
+ggplot(heart %>% filter(distance_stop > 0.5, rest_time < 361, heart_rate_stop < 190, !is.na(avg_temp))) + 
   geom_point(aes(x=rest_time, y=heart_rate_start, color=heart_rate_stop)) +
-  facet_grid(cut(avg_temp, breaks=seq(-5,40, 5))~.) + 
-  scale_color_gradientn('Initial Heart Rate (bpm)',  colors=cet_pal(7, 'inferno'))
+  facet_grid(cut(avg_temp, breaks=seq(-10,40, 5))~.) + 
+  scale_color_gradientn('Initial Heart Rate (bpm)',  colors=cet_pal(7, 'inferno')) +
+  xlab('Rest Time') + ylab('Heart Rate when Starting Again') + 
+  ggtitle('Heart Rate Relaxation after Paused Running', 
+          subtitle='Over various temperatures ranges (indicated by facet) and initial heart rates (indicated by color)\nhttps://maxcandocia.com/article/2019/Jan/09/modeling-heart-rate-nonlinear')

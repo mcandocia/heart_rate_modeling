@@ -5,6 +5,7 @@ data {
   vector[N] avg_temp;
   vector[N] rest_time;
 }
+
 parameters {
   real hr_a_const;
   real c1_const;
@@ -13,11 +14,8 @@ parameters {
   real c1_temp;
   
   real<lower=0> sigma2_1;
-  
 }
-transformed parameters {
-  
-}
+
 model{
   vector[N] hr_a;
   vector[N] c1;

@@ -43,7 +43,7 @@ fit <- stan(file='model_01.stan', data=heart_data,
 predict.01 <- function(data){
   data$heart_rate_stop + 
     (75.92-data$heart_rate_stop + 0.882*data$avg_temp) * ( 1-
-    exp(-(0.018283 + 0*1.922e-4*data$avg_temp)*data$rest_time)
+    exp(-(0.018283 + 1.922e-4*data$avg_temp)*data$rest_time)
   )
 }
 

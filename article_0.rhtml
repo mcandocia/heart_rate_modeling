@@ -1,0 +1,251 @@
+<script type="text/javascript" async
+  src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-MML-AM_CHTML">
+</script>
+
+<p> What kind of a tool do you use when you want to describe a complex phenomenon?</p>
+<p><a href="https://en.wikipedia.org/wiki/Linear_regression" id="wiki_linear_regression_out" target="_blank">Linear regression</a> is useful when your model is described by coefficients multiplying things that are added together, but it often cannot be used when coefficients are inside functions such as an exponential or log function. An example of a <i>valid</i> linear model could be $$Y = \beta_0 + \beta_1 \times X_1 + \beta_2 \times \log(X_2) + \epsilon$$
+where \(\beta_i\) are the different coefficients, \(Y\) is the response variable, \(X_i\) are the different predictors, and \(\epsilon\) is the normal error/noise (i.e., randomness) of each response.</p>
+
+<p> On the other hand, models such as <a href="https://en.wikipedia.org/wiki/Random_forest" id="wiki_random_forest_out" target="_blank">random forests</a> or <a href="https://en.wikipedia.org/wiki/Neural_network" id="wiki_neural_network_out" target="_blank">neural networks</a> are good at fitting highly complex shapes, but the underlying structure cannot be interpreted very easily. Random forests are an ensemble of decision trees that ask a bunch of yes/no questions about the different variables, and neural networks can sometimes be described as a very complicated flowchart that involves adding up points. <a href="https://maxcandocia.com/article/2016/Apr/06/how-computers-recognize-images/" target="_blank" id="how_computers_recognize_images_out">See this article of mine for a very basic introduction to neural networks</a>. </p>
+
+<p> Another method, <a href="https://en.wikipedia.org/wiki/Nonlinear_regression" id="wiki_nonlinear_regression_out" target="_blank">nonlinear regression</a>, can be very useful for fitting a model. Very generally, this is $$Y = f(X_1, X_2,...,X_N,\beta_1, \beta_2, ..., \beta_K)$$</p>
+
+<p>This can be very useful if you know what the parameters of the equation should be, as well as a (wide) ballpark idea of what their values should be. Fitting it, however, is much more complicated than fitting a linear model or random forest, as well as many neural networks.</p>
+
+<h2> Heart Rate Data </h2>
+
+<p> Over the past 16 months, I have been collecting heart rate data from my Garmin GPS watch for my runs, along with temperature data. One question I want to answer with that data is "How quickly does my heart rate decrease after I stop running, and how does temperature affect that?"</p>
+
+<p> I had discussed certain factors affecting heart rate after exercise with my friend Allen, who has worked in various human biological research environments. The main factor affecting heart rate increase during exercise is the breaking down of lactic acid and the regulation of \(CO_2\). Another significant factor he described was temperature, where the body tries to regulate its temperature by circulating blood faster.</p>
+
+<p> Of course, I do not have temperature of the body or \(CO_2\) levels directly measured by equipment, but the ambient temperature and the heart rate measurements should be sufficient.</p>
+
+<!--begin.rcode setup, echo=FALSE, warning=FALSE, message=FALSE
+library(plyr)
+library(dplyr)
+
+library(scales)
+library(ggplot2)
+library(cetcolor)
+
+heart = read.csv('s1_heart_data.csv')
+
+prettify_temp_range <- function(cut_temp){
+  levs = levels(cut_temp)
+  new_levs = gsub('.(-?[0-9]+),(-?[0-9]+).','\\1\u00B0 to \\2\u00B0C', levs, useBytes=FALSE)
+  Encoding(new_levs) <- 'UTF-8'
+  #print(new_levs)
+  plyr::mapvalues(cut_temp, from=levs, to=new_levs)
+}
+
+better_text_size_tiled <- theme(axis.text=element_text(size=rel(1.15)),
+                                axis.title=element_text(size=rel(1.5)),
+                                plot.title=element_text(size=rel(1.5)),
+                                plot.subtitle=element_text(size=rel(1.3)),
+                                legend.title=element_text(size=rel(1.5)),
+                                legend.text=element_text(size=rel(1.1)))
+
+end.rcode-->
+
+<p> The general shape of the data itself can be seen below. Note that as the temperature increases (from top to bottom), the asymptote of the heart rate as rest time grows large becomes higher. Any changes in rate are not as obvious. Higher initial heart rates are yellow, and lower ones are more purple/blue.</p>
+
+<!--begin.rcode hr_graph_0, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=11
+
+ggplot(heart %>% filter(distance_stop > 0.5, rest_time < 361, heart_rate_stop < 190, !is.na(avg_temp))) + 
+  geom_point(aes(x=rest_time, y=heart_rate_start, color=heart_rate_stop), alpha=0.8) +
+  facet_grid(prettify_temp_range(cut(avg_temp, breaks=seq(-10,40, 5)))~.) + 
+  scale_color_gradientn('Initial Heart Rate (bpm)',  colors=cet_pal(7, 'inferno')) +
+  xlab('Rest Time') + ylab('Heart Rate when Starting Again') + 
+  ggtitle('Heart Rate Relaxation after Paused Running', 
+          subtitle='Over various temperatures ranges (indicated by facet, lower end of range excluded) \nand initial heart rates (indicated by color)\nhttps://maxcandocia.com/article/2019/Jan/09/modeling-heart-rate-nonlinear') +
+  better_text_size_tiled
+
+
+end.rcode-->
+
+
+
+<p> For more technical information on heart rate during exercise, see <a href="https://www.frontiersin.org/articles/10.3389/fphys.2017.00301/full" id="frontiersin_heart_rate_exercise_out" target="_blank">Cardiac Autonomic Responses during Exercise and Post-exercise Recovery Using Heart Rate Variability and Systolic Time Intervals—A Review</a>. <b> Figure 2</b> is a good example for a theoretical curve.</p>
+
+<h2> Heart Rate Model </h2>
+
+<p> My first model was a bit more complicated, and looked like this: $$HR_{start} = HR_{stop} + (HR_a - HR_{stop}) \times (1-e^{-((\min(c_1t, lag))-max(c_2(t-lag), 0))})$$</p>
+
+<p> Where \(HR_a\) is the asymptotic heart rate, roughly what my heart rate is when walking, which I usually did after stopping, \(lag\) is the amount of time between the stop and the change of the heart rate relaxation mechanism, and \(c_1\) and \(c_2\) describe the rates of change of the heart rate before and after the mechanism change.</p>
+
+<p> Later, I used a simpler model, $$HR_{start} = HR_{stop} + (HR_a - HR_{stop}) \times (1-e^{-c_1t})$$ since my row count was not too high (\(N=646\)) and the \(c_2\) and \(lag\) parameters were not fitting well or consistently. Additionally, the fit for the simpler model had an \(R^2\) value very close to the random forest model (0.73 vs 0.75), suggesting that any additional parameterization with the given variables would not improve performance.</p>
+
+<h3> Variable Parameterization </h3>
+
+<p> Each of the above parameters itself is a function of temperature, so, for example $$HR_a = \beta_{HR_a,1} + \beta_{HR_a, T}T$$ where \(T\) is the average temperature.</p>
+
+
+<h2> Implementation in R</h2>
+
+<h3> Optimization and Package Choice</h3>
+
+<p> When I first tried modeling, I used R's <code>optim()</code> function to find the best solution. However, that method is not particularly robust, and had fairly poor performance and results.</p>
+
+<p> My next approach was to use the <code>dfoptim</code> package's <code>hjk()</code> function, which uses the <a href="https://web.stanford.edu/group/sisl/k12/optimization/MO-unit2-pdfs/2.11minimum3D2hooke-jeeves.pdf" target="_blank" id="stanford_hooke_jeeves_out">Hooke-Jeeves</a> algorithm, which is a pattern-search algorithm that does not require functions to be continuously differentiable.</p>
+
+<p> While this was a huge improvement over <code>optim</code>, it was quite slow, was very sensitive to initialization parameters, and did not produce very robust results.</p>
+
+<p> The final tool I used was a package called <a href="http://mc-stan.org/rstan/index.html" target="_blank" id="rstan_out"><code>rstan</code></a>, which is an interface to the C++ <a href="https://mc-stan.org/" target="_blank" id="stan_out">STAN platform</a>, which is used for high-performance statistical modeling used in many domains.</p>
+
+<p> Like the <code>hjk()</code> function, STAN benefits greatly from sensical initial parameters. The biggest difference this choice made was setting the constant term for \(HR_a\) to 80, which is a reasonable value for a heart rate when walking (for myself, at least). </p>
+
+<h3> Model Definition </h3>
+
+
+<!-- STAN CODE -->
+
+<p> I call the code in R using the following block:</p>
+
+<!--begin.rcode stan_example, eval=FALSE, echo=TRUE, warning=FALSE, message=FALSE
+library(rstan)
+library(dplyr)
+
+heart = read.csv('s1_heart_data.csv') %>%
+  filter(!is.na(heart_rate_start) & !is.na(heart_rate_stop) & !is.na(avg_temp))
+
+heart_data = list(N=nrow(heart))
+for (name in names(heart))
+  heart_data[[name]] = heart[,name]
+
+init_01 = list(
+  hr_a_const=80,
+  hr_a_temp=1,
+  c1_const=0.01,
+  c1_temp=-0.001,
+  sigma2_1=400
+)
+
+fit <- stan(file='model_01.stan', data=heart_data,
+            init= function(chain_id) init_01,
+            verbose=TRUE,
+            chains=1,
+            diagnostic_file='model_01_diagnostic.txt'
+)
+
+summary(fit)
+end.rcode-->
+
+<p>Below is the model specification written for STAN in <code>model_01.stan</code>:</p>
+<div class="highlight"><pre><span class="kn">data</span> <span class="p">{</span>
+  <span class="kt">int</span><span class="p">&lt;</span><span class="kr">lower</span><span class="o">=</span><span class="mi">0</span><span class="p">&gt;</span> <span class="n">N</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">heart_rate_start</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">heart_rate_stop</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">avg_temp</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">rest_time</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="kn">parameters</span> <span class="p">{</span>
+  <span class="kt">real</span> <span class="n">hr_a_const</span><span class="p">;</span>
+  <span class="kt">real</span> <span class="n">c1_const</span><span class="p">;</span>
+  
+  <span class="kt">real</span> <span class="n">hr_a_temp</span><span class="p">;</span>
+  <span class="kt">real</span> <span class="n">c1_temp</span><span class="p">;</span>
+  
+  <span class="kt">real</span><span class="p">&lt;</span><span class="kr">lower</span><span class="o">=</span><span class="mi">0</span><span class="p">&gt;</span> <span class="n">sigma2_1</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="kn">model</span><span class="p">{</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">hr_a</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">c1</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">yhat</span><span class="p">;</span>
+  <span class="kt">vector</span><span class="p">[</span><span class="n">N</span><span class="p">]</span> <span class="n">sigma2</span><span class="p">;</span>
+  <span class="c1">//c1 ~ </span>
+  
+  <span class="c1">//sigma2_2 ~ normal(500, 100);</span>
+  <span class="c1">//c1 ~ exponential(0.1);</span>
+  <span class="c1">//c2 ~ exponential(0.1);</span>
+  <span class="c1">//sigma2_rate ~ exponential(0.01);</span>
+  
+  <span class="kr">for</span> <span class="p">(</span><span class="n">n</span> <span class="kr">in</span> <span class="mi">1</span><span class="p">:</span><span class="n">N</span><span class="p">){</span>
+    <span class="n">hr_a</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">=</span> <span class="n">hr_a_const</span> <span class="o">+</span> <span class="n">avg_temp</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="o">*</span><span class="n">hr_a_temp</span><span class="p">;</span>
+    <span class="n">c1</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">=</span> <span class="n">c1_const</span> <span class="o">+</span> <span class="n">avg_temp</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">*</span> <span class="n">c1_temp</span><span class="p">;</span>
+  <span class="p">}</span>
+  
+  <span class="kr">for</span> <span class="p">(</span><span class="n">n</span> <span class="kr">in</span> <span class="mi">1</span><span class="p">:</span><span class="n">N</span><span class="p">){</span>
+      <span class="n">yhat</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">=</span> <span class="n">heart_rate_stop</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">+</span> <span class="p">(</span><span class="n">hr_a</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">-</span> <span class="n">heart_rate_stop</span><span class="p">[</span><span class="n">n</span><span class="p">])</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span><span class="o">-</span><span class="nb">exp</span><span class="p">(</span><span class="o">-</span><span class="n">rest_time</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="o">*</span><span class="n">c1</span><span class="p">[</span><span class="n">n</span><span class="p">]));</span>
+      <span class="n">sigma2</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">=</span> <span class="n">sigma2_1</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="n">heart_rate_start</span> <span class="o">~</span> <span class="nb">normal</span><span class="p">(</span><span class="n">yhat</span><span class="p">,</span> <span class="n">sigma2</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+
+<!--END STAN CODE-->
+
+<h2> Results </h2>
+
+<p> The STAN model, because it uses MCMC iterations, reports mean and quantile statistics for each parameter (e.g., median, 75th percentile). Using the mean, the model can be described as:
+$$ HR_{start} = HR_{stop} + (75.9 + 0.882T - HR_{stop})\times(1- 2^{-(0.0263 + 0.000277T)t }) + N(0, 145) $$
+
+where \(t\) is rest time, \(T\) is temperature in Celsius, and \(N(0,145)\) describes normal error with variance 145, or a standard error of about 12. In the model, though, the temperature term does not significantly affect the rate, as the 25th and 75th percentile estimates have different signs.</p>
+
+<p> However, because there is some nonlinear correlation within these parameters, if they are all to be taken at the same time, a more precise (but vulnerable to overfitting) estimate can be made using the original <code>hjk()</code> function, with the above parameters as estimates. The results are close, but the model becomes: 
+$$HR_{start} = HR_{stop} + (76.9 + 0.814T - HR_{stop})\times (1- 2^{-(0.0232 + 0.00101T)t})  + N(0, 2659) $$ </p>
+
+<p> The overall fit is technically higher, but the \(\sigma^2\) estimate is very poor, probably since it is very sensitive to small changes that greatly increase inaccuracy in the estimates.</p>
+
+<p> Visualizing the first model with the graph of the data from above: </p>
+
+<!--begin.rcode hr_graph_1, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=11
+
+model.estimator <- function(X){
+  rest_time=X[1]
+  temp = X[2]
+  heart_rate_stop=X[3]
+  heart_rate_stop + (75.9 + 0.882*temp - heart_rate_stop) * (1-2^(-(0.0263) * rest_time))
+}
+
+sim.data = expand.grid(
+  rest_time=seq(1,331,2),
+  avg_temp=seq(-7.5,32.5,5),
+  heart_rate_stop=c(100, 125, 150, 175)
+)
+
+sim.data$heart_rate_start = apply(sim.data, 1, model.estimator)
+
+ggplot(sim.data) + geom_line(data=sim.data, aes(x=rest_time, y=heart_rate_start, color=heart_rate_stop, group=factor(heart_rate_stop)), alpha=0.8) +
+  facet_grid(prettify_temp_range(cut(avg_temp, breaks=seq(-10,40, 5)))~.) + 
+  scale_color_gradientn('Initial Heart Rate (bpm)',  colors=cet_pal(7, 'inferno')) +
+  xlab('Rest Time') + ylab('Heart Rate when Starting Again') + 
+  ggtitle('Heart Rate Relaxation after Paused Running, Nonlinear Model and Data', 
+          subtitle='Over various temperatures ranges (indicated by facet, lower end of range excluded) \nand initial heart rates (indicated by color)\nhttps://maxcandocia.com/article/2019/Jan/09/modeling-heart-rate-nonlinear') + theme_dark() + 
+  geom_point(data=heart %>% filter(distance_stop > 0.5, rest_time < 361, heart_rate_stop < 190, !is.na(avg_temp)),
+             aes(x=rest_time, y=heart_rate_start, color=heart_rate_stop), alpha=0.8) +
+  better_text_size_tiled
+
+
+end.rcode-->
+
+<h2> Interpretation of Results </h2>
+
+<p> According to the model, my normal "walking" heart rate is 75.9 bpm, plus an extra 0.88 bmp per degree Celsius outside, and after pausing, the average "half-life" of my heart rate relaxation is \(\frac{1}{0.0632}\), or about 38 seconds. For example, if my heart rate was 160 bpm when it is about 5 degrees Celsius outside, my walking heart rate would eventually be 80 bpm, and after 38 seconds, that initial difference would be halved, so it would be at 120 bpm (since 160 bpm = 80 bpm + 80 bpm, and 80 bpm + 80/2 bpm = 120 bpm).</p>
+
+<p> Of course, the standard error of these estimates is about 12 bpm, and the 95% confidence interval is about 10 bpm (71-81 bpm) leaving a 95% prediction interval roughly 30 bpm below and 30 bpm above that estimate for any single event. Some of this error may be hidden in some of the data I have collected but yet to transform, but much of it is likely in difference in behavior during stop time, as well as other values that were not measured.</p>
+
+<h2> Future Work </h2>
+
+<p> I am constantly collecting more data, and a friend of mine, using the same models of equipment, is doing the same. I am hoping to add some complexity to these models as more data is collected and extract more useful insights from these models.</p>
+
+<h2> Code </h2>
+
+<p> The code and data for this model can be found at <a href="https://github.com/mcandocia/heart_rate_modeling" target="_blank" id="github_heart_rate_analysis">https://github.com/mcandocia/heart_rate_modeling</a></p>
+
+<h2> Extra Model Notes </h2>
+
+<ul>
+<li> The more complex model had a separate standard error and "burn in rate" for that error when mechanisms for heart rate variability changed. </li>
+<li> I originally tested average speed over a moving window as one of the parameters, but I decided on removing that, as the heart rate at the stopwatch stop was sufficient.</li>
+<li> I removed events that occured less than 0.8 miles into a run, since the heart rate monitor tends to give inaccurate measurements early in a run.</li>
+</ul>
+
+<p> You can also see the summary of the rstan model fit below:</p>
+
+<!--begin.rcode rstan_summary, echo=TRUE
+load(file='example_rstan_fit.RData')
+summary(fit)$summary
+end.rcode-->
+

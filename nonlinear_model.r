@@ -133,48 +133,174 @@ make_estimator_function_v2 <- function(
     # X - description below
     # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C1(v1), ..., C2(vn), sigma^2
     # HR_a is the steady-state heart rate
-    # lag is the lag in which process of heart rate relaxation changes
     # C1 is the coefficient of heart rate change in first phase
-    # C2 is the coefficient of heart rate change in second phase
     # sigma2 is standard error in phase 1
-    # sigma2_rate is coefficient of rate of change of sigma in phase 2
-    # sigma2_final is final sigma for second phase of heart rate change
     # 1 means "constant" - first three variables in model are the constant
     # vn means the nth variable
     HR_a = X[1]
-    lag = X[2]
-    C1 = X[3]
-    C2 = X[4]
+    C1 = X[2]
     i = 1
     for (variable in variables){
       
       trans_func = identity
-      if (variable %in% coefficients_to_exponentiate){
-        trans_func = function(x, min_slope=.01) {
-          ifelse(x>0, exp(x)*min_slope-min_slope, min_slope-exp(abs(x))*min_slope)
-        }
-      }
-      HR_a = HR_a + trans_func(X[1+4*i]) * data[,variable]
-      lag = lag + trans_func(X[2+4*i]) * data[,variable]
-      C1 = C1 + trans_func(X[3+4*i]) * data[,variable]
-      C2 = C2 + trans_func(X[4+4*i]) * data[,variable]
+      HR_a = HR_a + trans_func(X[1+2*i]) * data[,variable]
+      C1 = C1 + trans_func(X[2+2*i]) * data[,variable]
       i = i + 1
     }
     
-    sigma2 = X[4*i+1]
-    sigma2_rate = X[4*i+2]
-    sigma2_final = X[4*i + 3]
+    sigma2 = X[2*i+1]
+
     
     t = data$rest_time
     
     estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * 
-      (1-ifelse(t<lag, exp(-t * C1), exp(-lag * C1) * exp(-(t-lag) * C2)))
+      (1- exp(-t * C1))
     
     # if Inf * 0 occurs above
     estimates = ifelse(is.na(estimates), 1000, estimates)
     
     
-    effective_sigma2 = sigma2 + ifelse(t < lag, 0, (sigma2_final-sigma2)*(1-pmin(0, exp(-(t-lag)*sigma2_rate))))
+    effective_sigma2 = sigma2 
+    #print(C2)
+    #print(effective_sigma2)
+    
+    ll = -sum(na.penalty(log(effective_sigma2)))/2  - 
+      sum(1/abs(effective_sigma2) *
+            (data$heart_rate_start - estimates)^2
+      )
+    
+    return(estimates)
+  }
+  data_filtered <<- data
+  return(model_func)
+}
+
+
+heart_rate_estimator_function_v0 <- function(
+  data,
+  variables,
+  coefficients_to_exponentiate=character(0),
+  polynomial_order=1 #may be implemented later
+){
+  # clean input
+  for (variable in c('heart_rate_stop','rest_time','heart_rate_start', variables)){
+    print(variable)
+    data = data[!is.na(data[,variable]),]
+  }
+  print(colwise(function(x)sum(is.na(x)))(data))
+  
+  # function to return
+  model_func <- function(X){
+    # X - description below
+    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C1(v1), ..., C2(vn), sigma^2
+    # HR_a is the steady-state heart rate
+    # C1 is the coefficient of heart rate change in first phase
+    # sigma2 is standard error in phase 1
+    # 1 means "constant" - first three variables in model are the constant
+    # vn means the nth variable
+    HR_a = X[1]
+    C1 = X[2]
+    i = 1
+    for (variable in variables){
+      
+      trans_func = identity
+      HR_a = HR_a + trans_func(X[1+2*i]) * data[,variable]
+      C1 = C1 + trans_func(X[2+2*i]) * data[,variable]
+      i = i + 1
+    }
+    
+    sigma2 = X[2*i+1]
+
+    
+    t = data$rest_time
+    
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * 
+      (1- exp(-t * C1))
+    
+    # if Inf * 0 occurs above
+    estimates = ifelse(is.na(estimates), 1000, estimates)
+    
+    
+    effective_sigma2 = sigma2 
+    if (any(is.na(log(effective_sigma2)))){
+      #print(summary(effective_sigma2))
+    }
+    #print(C2)
+    #print(effective_sigma2)
+    
+    ll = -sum(na.penalty(log(effective_sigma2)))/2  - 
+      sum(1/abs(effective_sigma2) *
+            (data$heart_rate_start - estimates)^2
+      )
+    
+    
+    penalty=0
+    penalty = penalty + 50 * (sum(effective_sigma2==0))
+    if (sigma2 < 0){
+      penalty=penalty+1e6
+    }
+    if (any(HR_a <= 50)){
+      penalty=penalty+150*sum(pmin(1000, exp(abs(50-HR_a)[HR_a<0])))+300
+    }
+    if (any(C1<= 0)){
+      penalty=penalty+150* sum(pmin(2000,exp(abs(C1)[C1<0])))+300
+    }
+    # very tiny regularization penalty
+    penalty=penalty+0.01*sum(abs(X))
+    
+    
+    
+    return(-ll + penalty)
+  }
+  return(model_func)
+}
+
+make_estimator_function_v0 <- function(
+  data,
+  variables,
+  coefficients_to_exponentiate=character(0),
+  polynomial_order=1 #may be implemented later
+){
+  # clean input
+  for (variable in c('heart_rate_stop','rest_time','heart_rate_start', variables)){
+    print(variable)
+    data = data[!is.na(data[,variable]),]
+  }
+  print(colwise(function(x)sum(is.na(x)))(data))
+  
+  # function to return
+  model_func <- function(X){
+    # X - description below
+    # HR_a(1), lag(1), C(1), HR_a(v1), lag(v1), C1(v1), ..., C2(vn), sigma^2
+    # HR_a is the steady-state heart rate
+    # C1 is the coefficient of heart rate change in first phase
+    # sigma2 is standard error in phase 1
+    # 1 means "constant" - first three variables in model are the constant
+    # vn means the nth variable
+    HR_a = X[1]
+    C1 = X[2]
+    i = 1
+    for (variable in variables){
+      
+      trans_func = identity
+      HR_a = HR_a + trans_func(X[1+2*i]) * data[,variable]
+      C1 = C1 + trans_func(X[2+2*i]) * data[,variable]
+      i = i + 1
+    }
+    
+    sigma2 = X[2*i+1]
+    
+    
+    t = data$rest_time
+    
+    estimates = data$heart_rate_stop + (HR_a - data$heart_rate_stop) * 
+      (1- exp(-t * C1))
+    
+    # if Inf * 0 occurs above
+    estimates = ifelse(is.na(estimates), 1000, estimates)
+    
+    
+    effective_sigma2 = sigma2 
     if (any(is.na(log(effective_sigma2)))){
       #print(summary(effective_sigma2))
     }
@@ -194,16 +320,16 @@ make_estimator_function_v2 <- function(
 
 heart = heart %>% mutate(avg_temp_from_room_squared = (avg_temp-22)^2)
 
-hr_func = heart_rate_estimator_function(
+hr_func = heart_rate_estimator_function_v0(
   heart %>% filter(distance_start> 0.8),
   #coefficients_to_exponentiate=c('avg_temp', 'speed_past_60_seconds'),
-  variables=c('avg_temp', 'speed_past_60_seconds')#, 'avg_temp_from_room_squared')
+  variables=c('avg_temp')#, 'avg_temp_from_room_squared')
 )
 
-estimator_func = make_estimator_function(
+estimator_func = make_estimator_function_v0(
   heart %>% filter(distance_start> 0.8),
   #coefficients_to_exponentiate=c('avg_temp', 'speed_past_60_seconds'),
-  variables=c('avg_temp','speed_past_60_seconds')#, 'avg_temp_from_room_squared')
+  variables=c('avg_temp')#, 'avg_temp_from_room_squared')
 )
 
 # steady_temp, lag, rate
@@ -215,6 +341,12 @@ initial_params = c(
   400, # sigma2
   0.2, # sigma2_rate
   600 # sigma2_final
+)
+
+initial_params = c(
+  75.9,0.01828,
+  0.8821, 1.9224e-4,
+  200
 )
 
 initial_parameter_modifications<- function(n=14){
@@ -239,7 +371,7 @@ if (TRUE){
   best_method=NULL
   for (i in 1:5000){
     print(i)
-    ipars = initial_params+initial_parameter_modifications()/4.5
+    ipars = initial_params#+initial_parameter_modifications()/4.5
     if (i %% 2==0.1)
       new_optimal_params = optim(
         ipars,
